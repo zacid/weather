@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Weather Station</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+        #control-panel {
+            position: fixed;
+            right: 0;
+            top: 0;
+            width: 250px;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 20px;
+            color: white;
+            overflow-y: auto;
+        }
+        .control-group {
+            margin-bottom: 20px;
+        }
+        .control-group h3 {
+            margin: 0 0 10px 0;
+            color: #fff;
+        }
+        .control-item {
+            margin-bottom: 10px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+        }
+        input[type="range"], input[type="number"], input[type="color"] {
+            width: 100%;
+            margin-bottom: 10px;
+        }
+        input[type="color"] {
+            height: 40px;
+            padding: 0;
+            border: none;
+            background: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="control-panel">
+        <div class="control-group">
+            <h3>Particles</h3>
+            <div class="control-item">
+                <label for="particleCount">Number of Particles</label>
+                <input type="range" id="particleCount" min="5" max="50" value="25">
+            </div>
+            <div class="control-item">
+                <label for="particleOpacity">Particle Opacity</label>
+                <input type="range" id="particleOpacity" min="0" max="1" step="0.1" value="0.55">
+            </div>
+            <div class="control-item">
+                <label for="rotationSpeed">Rotation Speed</label>
+                <input type="range" id="rotationSpeed" min="0.0001" max="0.005" step="0.0001" value="0.001">
+            </div>
+        </div>
+        
+        <div class="control-group">
+            <h3>Rain Effect</h3>
+            <div class="control-item">
+                <label for="rainIntensity">Intensity</label>
+                <input type="range" id="rainIntensity" min="0" max="50000" step="1000" value="15000">
+            </div>
+            <div class="control-item">
+                <label for="rainSpeed">Speed</label>
+                <input type="range" id="rainSpeed" min="0.01" max="2" step="0.01" value="0.5">
+            </div>
+        </div>
+
+        <div class="control-group">
+            <h3>Lightning Effect</h3>
+            <div class="control-item">
+                <label for="flashFrequency">Frequency</label>
+                <input type="range" id="flashFrequency" min="0" max="1" step="0.01" value="0.07">
+            </div>
+            <div class="control-item">
+                <label for="flashColor">Color</label>
+                <input type="color" id="flashColor" value="#062d89">
+            </div>
+        </div>
+
+        <div class="control-group">
+            <h3>Lighting</h3>
+            <div class="control-item">
+                <button id="randomizeColors" style="width: 100%; padding: 10px; margin-bottom: 15px; background: #444; color: white; border: 1px solid #666; cursor: pointer; border-radius: 4px;">Randomise Colours</button>
+            </div>
+            <div class="control-item">
+                <label for="ambientColor">Ambient Light</label>
+                <input type="color" id="ambientColor" value="#0a1a2f">
+            </div>
+            <div class="control-item">
+                <label for="directionalColor">Directional Light</label>
+                <input type="color" id="directionalColor" value="#1e3d59">
+            </div>
+            <div class="control-item">
+                <label for="orangeLightColor">Point Light 1</label>
+                <input type="color" id="orangeLightColor" value="#2b5d8c">
+            </div>
+            <div class="control-item">
+                <label for="redLightColor">Point Light 2</label>
+                <input type="color" id="redLightColor" value="#0f4c81">
+            </div>
+            <div class="control-item">
+                <label for="blueLightColor">Point Light 3</label>
+                <input type="color" id="blueLightColor" value="#083d77">
+            </div>
+        </div>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="weather.js"></script>
+</body>
+</html> 
