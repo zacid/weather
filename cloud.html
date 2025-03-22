@@ -1,0 +1,902 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Flying Through Clouds</title>
+    <style>
+        body {
+            background-color: #000000;
+            margin: 0;
+            overflow: hidden;
+        }
+        .container {
+            width: 100%;
+            height: 100vh;
+            position: relative;
+        }
+        canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container"></div>
+    
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.162.0/build/three.module.js",
+                "addons/utils/BufferGeometryUtils.js": "https://unpkg.com/three@0.162.0/examples/jsm/utils/BufferGeometryUtils.js"
+            }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import * as BufferGeometryUtils from 'addons/utils/BufferGeometryUtils.js';
+
+        // Constants
+        const FOG_COLOR = 0x0a0e20;
+        const CLOUD_COUNT = 8000;
+        const CAMERA_FOV = 30;
+        const CAMERA_NEAR = 1;
+        const CAMERA_FAR = 3000;
+        const ANIMATION_SPEED = 0.03;
+        const ANIMATION_SPEED_BOOST = 0.3; // 10x normal speed
+        const STAR_COUNT = 2000; // Many more but much smaller stars
+
+        // Cloud shader definitions
+        const cloudShader = {
+          vertexShader: `
+            uniform float speedBoost;
+            varying vec2 vUv;
+            varying vec3 vPosition;
+            
+            void main() {
+              vUv = uv;
+              vPosition = position;
+              
+              // Create a stretching effect in the z direction when speeding
+              vec3 modifiedPosition = position;
+              modifiedPosition.z -= speedBoost * 20.0 * (1.0 - uv.y); // Stretch more at the front of clouds
+              
+              gl_Position = projectionMatrix * modelViewMatrix * vec4(modifiedPosition, 1.0);
+            }
+          `,
+          fragmentShader: `
+            uniform sampler2D map;
+            uniform vec3 fogColor;
+            uniform float fogNear;
+            uniform float fogFar;
+            uniform float lightningIntensity;
+            uniform vec3 lightningColor;
+            uniform vec3 lightningPosition;
+            uniform float speedBoost;
+            varying vec2 vUv;
+            varying vec3 vPosition;
+
+            void main() {
+              float depth = gl_FragCoord.z / gl_FragCoord.w;
+              float fogFactor = smoothstep(fogNear, fogFar, depth);
+
+              // Apply slight texture coordinate shift for motion blur effect when speeding
+              vec2 blurredUv = vUv;
+              blurredUv.x += speedBoost * 0.03 * (vUv.y - 0.5); // Shift more at the edges
+
+              // Base cloud color
+              vec4 texColor = texture2D(map, blurredUv);
+              
+              // Tint clouds for stormy nighttime look
+              vec3 stormyColor = vec3(0.1, 0.12, 0.18); // Dark blue-gray
+              
+              // Apply darker cloud coloring at normal speed
+              float darknessFactor = 0.5 + 0.3 * speedBoost; // 0.5 normally, up to 0.8 at full speed
+              vec3 cloudBase = mix(texColor.rgb, stormyColor, darknessFactor);
+              
+              // Speed streaks - add bluish lines in direction of travel
+              float streakIntensity = smoothstep(0.0, 1.0, speedBoost);
+              float streakPattern = fract(vPosition.z * 0.02) < 0.5 ? 0.0 : streakIntensity * 0.3;
+              vec3 streakColor = vec3(0.6, 0.8, 1.0);
+              cloudBase = mix(cloudBase, streakColor, streakPattern);
+              
+              // Calculate distance to lightning with improved distance falloff
+              float distToLightning = length(vPosition - lightningPosition);
+              
+              // Create a more ethereal glow with wider radius and less falloff
+              float lightningFactor = lightningIntensity / (1.0 + distToLightning * 0.0003);
+              
+              // Add volumetric-like effect where clouds closer to camera get more illumination
+              float cameraProximity = smoothstep(1000.0, 100.0, depth);
+              lightningFactor = lightningFactor * (1.0 + cameraProximity * 0.3);
+              
+              // Add subtle noise variation to the lightning effect based on position
+              float noisePattern = sin(vPosition.x * 0.01) * sin(vPosition.z * 0.1) * 0.5 + 0.5;
+              lightningFactor = lightningFactor * (0.9 + noisePattern * 0.3);
+              
+              lightningFactor = clamp(lightningFactor, 0.0, 1.0);
+              
+              // Create more dramatic cloud illumination with brighter highlights and color tinting
+              vec3 litColor = mix(cloudBase, lightningColor * 1.2, lightningFactor * 0.8);
+              
+              // Add subtle color bleeding for an ethereal effect
+              vec3 etherealTint = mix(lightningColor * 0.7, vec3(0.6, 0.8, 1.0), noisePattern);
+              litColor = mix(litColor, etherealTint, lightningFactor * 0.3);
+              
+              // Add subtle illumination variation based on height for more dramatic clouds
+              float heightFactor = smoothstep(-50.0, 200.0, vPosition.y);
+              litColor = mix(litColor, vec3(0.15, 0.17, 0.22), heightFactor * 0.4 * (1.0 - lightningFactor));
+              
+              // Standard fog with adjustment for lightning
+              gl_FragColor = vec4(litColor, texColor.a);
+              gl_FragColor.w *= pow(gl_FragCoord.z, 20.0);
+              
+              // Add vignette and fade edges for speed effect
+              if (speedBoost > 0.0) {
+                float vignetteStrength = 0.7 * speedBoost;
+                float vignette = 1.0 - vignetteStrength * (distance(vUv, vec2(0.5, 0.5)) * 1.5);
+                gl_FragColor.rgb = mix(gl_FragColor.rgb, gl_FragColor.rgb * vignette, speedBoost);
+                
+                // Slightly modify color to indicate speed (shift toward blue)
+                gl_FragColor.rgb = mix(gl_FragColor.rgb, 
+                                       gl_FragColor.rgb * vec3(0.9, 0.95, 1.1), 
+                                       speedBoost * 0.3);
+              }
+              
+              // Reduce fog effect during intense lightning for more dramatic effect
+              float adjustedFogFactor = fogFactor * (1.0 - lightningFactor * 0.3);
+              gl_FragColor = mix(gl_FragColor, vec4(fogColor, gl_FragColor.w), adjustedFogFactor);
+            }
+          `
+        };
+
+        // Scene variables
+        let container, scene, camera, renderer;
+        let position, mouseX = 0, mouseY = 0;
+        let windowHalfX, windowHalfY;
+        let start_time;
+        let lightningManager = null;
+        let planesMesh, planesMeshA;
+        let material;
+        let currentSpeed = ANIMATION_SPEED; // Track current animation speed
+        let lastSpeedChangeTime = 0; // Track when speed was last changed
+        let speedBoostFactor = 0.0; // Visual effect transition factor
+        let stars; // Star field
+
+        // Initialize the application
+        function init() {
+        // DOM elements and basic setup
+            container = document.querySelector('.container');
+            scene = new THREE.Scene();
+            
+            windowHalfX = window.innerWidth / 2;
+            windowHalfY = window.innerHeight / 2;
+            
+            // Camera setup
+            camera = new THREE.PerspectiveCamera(
+                CAMERA_FOV, 
+                window.innerWidth / window.innerHeight, 
+                CAMERA_NEAR, 
+                CAMERA_FAR
+            );
+            camera.position.z = 6000;
+        
+        // Renderer setup
+            renderer = new THREE.WebGLRenderer({ 
+            antialias: false, 
+            alpha: true,
+            powerPreference: 'high-performance'
+        });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // Limit pixel ratio for performance
+        container.appendChild(renderer.domElement);
+
+            start_time = Date.now();
+            
+            // Load cloud texture efficiently
+            loadCloudTexture();
+            
+            // Add event listeners
+            document.addEventListener('mousemove', onDocumentMouseMove, false);
+            window.addEventListener('resize', onWindowResize, false);
+            
+            // Add keyboard event listeners for spacebar speed control
+            document.addEventListener('keydown', onKeyDown, false);
+            document.addEventListener('keyup', onKeyUp, false);
+        }
+        
+        // Load cloud texture with better error handling
+        function loadCloudTexture() {
+            const tLoader = new THREE.TextureLoader();
+            
+            tLoader.load('images/cloud.png', 
+                // Success callback
+                (texture) => {
+          texture.colorSpace = THREE.SRGBColorSpace;
+                    setupScene(texture);
+                }, 
+                // Progress callback
+                undefined, 
+                // Error callback
+                (error) => {
+                    console.error('Error loading cloud texture:', error);
+                }
+            );
+        }
+
+        function setupScene(texture) {
+          // Create background gradient
+            createBackgroundGradient();
+
+          // Configure texture
+          texture.magFilter = THREE.LinearFilter;
+          texture.minFilter = THREE.LinearMipmapLinearFilter;
+          texture.generateMipmaps = true;
+          texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+            // Create stars FIRST - before clouds so render order is correct
+            createStars();
+
+          // Set up fog with more stormy color
+            const fog = new THREE.Fog(FOG_COLOR, -100, 3000);
+          scene.fog = fog;
+
+          // Create shader material
+            material = new THREE.ShaderMaterial({
+            uniforms: {
+              "map": { value: texture },
+              "fogColor": { value: fog.color },
+              "fogNear": { value: fog.near },
+              "fogFar": { value: fog.far },
+              "lightningIntensity": { value: 0.0 },
+              "lightningColor": { value: new THREE.Color(0xb4c5ff) }, // Slightly blue lightning
+                    "lightningPosition": { value: new THREE.Vector3(0, 0, 0) },
+                    "speedBoost": { value: 0.0 } // Speed boost visual effect factor
+            },
+            vertexShader: cloudShader.vertexShader,
+            fragmentShader: cloudShader.fragmentShader,
+            depthWrite: false,
+            depthTest: false,
+            transparent: true
+          });
+
+            // Create cloud meshes
+            createCloudMeshes(material);
+
+            // Initialize the lightning manager
+            lightningManager = new LightningManager(material);
+
+            // Start animation loop
+            animate();
+        }
+        
+        function createBackgroundGradient() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 32;
+            canvas.height = window.innerHeight;
+            const context = canvas.getContext('2d');
+            const gradient = context.createLinearGradient(0, 0, 0, canvas.height);
+            gradient.addColorStop(0, "#050508"); // Almost black at top
+            gradient.addColorStop(0.5, "#0a1020"); // Dark blue-purple in middle
+            gradient.addColorStop(1, "#101520"); // Slightly lighter at bottom
+            context.fillStyle = gradient;
+            context.fillRect(0, 0, canvas.width, canvas.height);
+            container.style.background = 'url(' + canvas.toDataURL('image/png') + ')';
+            container.style.backgroundSize = '32px 100%';
+        }
+        
+        function createCloudMeshes(material) {
+          // Create cloud geometries
+          const planeGeo = new THREE.PlaneGeometry(64, 64);
+          const planeObj = new THREE.Object3D();
+          const geometries = [];
+
+          // Generate cloud planes
+            for (let i = 0; i < CLOUD_COUNT; i++) {
+            planeObj.position.x = Math.random() * 1000 - 500;
+            planeObj.position.y = -Math.random() * Math.random() * 200 - 15;
+            planeObj.position.z = i;
+            planeObj.rotation.z = Math.random() * Math.PI;
+            planeObj.scale.x = planeObj.scale.y = Math.random() * Math.random() * 1.5 + 0.5;
+            planeObj.updateMatrix();
+
+            const clonedPlaneGeo = planeGeo.clone();
+            clonedPlaneGeo.applyMatrix4(planeObj.matrix);
+            geometries.push(clonedPlaneGeo);
+          }
+
+          // Merge geometries for better performance
+          const planeGeos = BufferGeometryUtils.mergeGeometries(geometries);
+          
+          // Create and add main cloud mesh
+            planesMesh = new THREE.Mesh(planeGeos, material);
+          planesMesh.renderOrder = 2;
+          scene.add(planesMesh);
+          
+          // Create and add secondary cloud mesh for seamless scrolling
+            planesMeshA = planesMesh.clone();
+          planesMeshA.position.z = -8000;
+          planesMeshA.renderOrder = 1;
+          scene.add(planesMeshA);
+        }
+
+        // Create stars in the background
+        function createStars() {
+            console.log("Creating stars");
+            
+            // For truly realistic stars, create TWO star systems:
+            // 1. Distant background stars (tiny points)
+            // 2. A few brighter foreground stars
+            
+            // ---- BACKGROUND STARS (TINY POINTS) ----
+            createBackgroundStars();
+            
+            // ---- FOREGROUND STARS (SLIGHTLY LARGER) ----
+            createForegroundStars();
+            
+            console.log("Stars created");
+        }
+
+        function createBackgroundStars() {
+            const starGeometry = new THREE.BufferGeometry();
+            const vertices = [];
+            const colors = [];
+            
+            // Create many tiny background stars (no size attribute needed for tiny consistent stars)
+            for (let i = 0; i < STAR_COUNT; i++) {
+                // Position with astronomical distribution
+                // Most stars in bands (like Milky Way) with more density in certain regions
+                
+                // Horizontal position with clustering
+                let x;
+                const xDistribution = Math.random();
+                if (xDistribution < 0.7) {
+                    // 70% of stars in central band (Milky Way simulation)
+                    x = (Math.random() - 0.5) * 2000;
+                } else {
+                    // 30% of stars spread wider
+                    x = (Math.random() - 0.5) * 3000;
+                }
+                
+                // Vertical position - mostly in upper hemisphere (natural night sky view)
+                const yBand = Math.random();
+                let y;
+                if (yBand < 0.8) {
+                    // 80% in upper hemisphere
+                    y = Math.pow(Math.random(), 0.6) * 1200;
+                } else {
+                    // 20% scattered lower
+                    y = -(Math.random() * 200);
+                }
+                
+                // Fixed z distance that works
+                const z = -600;
+                
+                vertices.push(x, y, z);
+                
+                // Extremely subtle color variations - almost all white/blue-white
+                // Real stars are only subtly different in color to human eye
+                const colorVal = Math.random();
+                let r, g, b;
+                
+                if (colorVal < 0.85) {
+                    // Majority are white with very subtle blue tint
+                    const white = 0.9 + Math.random() * 0.1;
+                    r = white;
+                    g = white;
+                    b = Math.min(1.0, white + Math.random() * 0.05); // Slightly bluer
+                } else if (colorVal < 0.95) {
+                    // Some with very subtle yellow tint
+                    r = 0.9 + Math.random() * 0.1;
+                    g = 0.9 + Math.random() * 0.1;
+                    b = 0.85 + Math.random() * 0.1;
+                } else {
+                    // Very few with subtle red or blue tint
+                    if (Math.random() < 0.5) {
+                        // Subtle blue
+                        r = 0.85 + Math.random() * 0.1;
+                        g = 0.9 + Math.random() * 0.1;
+                        b = 0.95 + Math.random() * 0.05;
+                    } else {
+                        // Subtle red
+                        r = 0.9 + Math.random() * 0.1;
+                        g = 0.85 + Math.random() * 0.05;
+                        b = 0.85 + Math.random() * 0.05;
+                    }
+                }
+                
+                // Vary brightness across all stars
+                const brightness = 0.3 + Math.pow(Math.random(), 0.7) * 0.7; // More dim stars than bright ones
+                r *= brightness;
+                g *= brightness;
+                b *= brightness;
+                
+                colors.push(r, g, b);
+            }
+            
+            starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+            starGeometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+            
+            // Material for tiny background stars - no texture needed for point-like stars
+            const starMaterial = new THREE.PointsMaterial({
+                size: 1.0,
+                sizeAttenuation: false, // Fixed pixel size regardless of distance
+                transparent: false,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false,
+                depthTest: false,
+                vertexColors: true
+            });
+            
+            // Create the background star points
+            const backgroundStars = new THREE.Points(starGeometry, starMaterial);
+            backgroundStars.renderOrder = 10;
+            scene.add(backgroundStars);
+            
+            // Store reference to background stars for animation
+            stars = backgroundStars;
+        }
+
+        function createForegroundStars() {
+            // Create just a few brighter foreground stars with actual size
+            const fgStarCount = 40;
+            const fgStarGeometry = new THREE.BufferGeometry();
+            const vertices = [];
+            const sizes = [];
+            const colors = [];
+            
+            // Create a small number of brighter stars
+            for (let i = 0; i < fgStarCount; i++) {
+                // Scatter across the sky
+                const x = (Math.random() - 0.5) * 2500;
+                const y = Math.random() * 1000 - 100; 
+                const z = -550; // Slightly in front of background stars
+                
+                vertices.push(x, y, z);
+                
+                // Bright stars - use astronomical magnitude scale basis
+                const magnitude = Math.random() * 2; // 0-2 magnitude (brighter stars)
+                const size = 2 + (2 - magnitude) * 1.0; // Size based on brightness
+                sizes.push(size);
+                
+                // Color for bright stars - use realistic star colors
+                // Based on stellar classification (O, B, A, F, G, K, M)
+                const stellarClass = Math.random();
+                let r, g, b;
+                
+                if (stellarClass < 0.05) {
+                    // O/B type - blue/white (rare)
+                    r = 0.8 + Math.random() * 0.2;
+                    g = 0.85 + Math.random() * 0.15;
+                    b = 1.0;
+                } else if (stellarClass < 0.15) {
+                    // A type - white with slight blue
+                    r = 0.95 + Math.random() * 0.05;
+                    g = 0.95 + Math.random() * 0.05;
+                    b = 1.0;
+                } else if (stellarClass < 0.35) {
+                    // F type - white with slight yellow
+                    r = 1.0;
+                    g = 0.98 + Math.random() * 0.02;
+                    b = 0.9 + Math.random() * 0.1;
+                } else if (stellarClass < 0.60) {
+                    // G type - yellow-white (like our Sun)
+                    r = 1.0;
+                    g = 0.92 + Math.random() * 0.08;
+                    b = 0.8 + Math.random() * 0.1;
+                } else if (stellarClass < 0.85) {
+                    // K type - orange-ish
+                    r = 1.0;
+                    g = 0.8 + Math.random() * 0.1;
+                    b = 0.7 + Math.random() * 0.1;
+                } else {
+                    // M type - reddish (rare)
+                    r = 1.0;
+                    g = 0.7 + Math.random() * 0.1;
+                    b = 0.6 + Math.random() * 0.1;
+                }
+                
+                colors.push(r, g, b);
+            }
+            
+            fgStarGeometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+            fgStarGeometry.setAttribute('size', new THREE.Float32BufferAttribute(sizes, 1));
+            fgStarGeometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+            
+            // Create a subtle glow texture for brighter stars
+            const canvas = document.createElement('canvas');
+            canvas.width = 32;
+            canvas.height = 32;
+            const context = canvas.getContext('2d');
+            
+            // Draw a very soft, realistic star point
+            const gradient = context.createRadialGradient(16, 16, 0, 16, 16, 16);
+            gradient.addColorStop(0, 'rgba(255, 255, 255, 0.5)');  // Less intense center
+            gradient.addColorStop(0.1, 'rgba(255, 255, 255, 0.3)');
+            gradient.addColorStop(0.5, 'rgba(255, 255, 255, 0.1)');
+            gradient.addColorStop(1, 'rgba(255, 255, 255, 0.0)');
+            
+            context.fillStyle = gradient;
+            context.beginPath();
+            context.arc(16, 16, 16, 0, Math.PI * 2);
+            context.fill();
+            
+            const starTexture = new THREE.CanvasTexture(canvas);
+            
+            // Material for brighter foreground stars
+            const fgStarMaterial = new THREE.PointsMaterial({
+                size: 12,
+                map: starTexture,
+                transparent: true,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false,
+                depthTest: false,
+                vertexColors: true
+            });
+            
+            // Create the foreground star points
+            const foregroundStars = new THREE.Points(fgStarGeometry, fgStarMaterial);
+            foregroundStars.renderOrder = 11; // Render after background stars
+            scene.add(foregroundStars);
+            
+            // Store with a custom name for animation
+            foregroundStars.name = "fgStars";
+            scene.getObjectByName("fgStars") // Just to verify it's named
+        }
+
+        // Event handlers
+        function onDocumentMouseMove(event) {
+            mouseX = (event.clientX - windowHalfX) * 0.25;
+            mouseY = (event.clientY - windowHalfY) * 0.15;
+        }
+
+        function onWindowResize() {
+            windowHalfX = window.innerWidth / 2;
+            windowHalfY = window.innerHeight / 2;
+            
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            
+            // Update background gradient if needed
+            createBackgroundGradient();
+        }
+        
+        // Handle key press events
+        function onKeyDown(event) {
+            // Check if spacebar was pressed (key code 32)
+            if ((event.code === 'Space' || event.keyCode === 32) && currentSpeed !== ANIMATION_SPEED_BOOST) {
+                // Calculate current position before speed change
+                const currentTime = Date.now();
+                const currentPosition = ((currentTime - start_time) * currentSpeed) % 8000;
+                
+                // Change speed
+                currentSpeed = ANIMATION_SPEED_BOOST;
+                
+                // Adjust start_time to maintain position continuity
+                start_time = currentTime - (currentPosition / currentSpeed);
+                lastSpeedChangeTime = currentTime;
+            }
+        }
+        
+        // Handle key release events
+        function onKeyUp(event) {
+            // Check if spacebar was released
+            if ((event.code === 'Space' || event.keyCode === 32) && currentSpeed !== ANIMATION_SPEED) {
+                // Calculate current position before speed change
+                const currentTime = Date.now();
+                const currentPosition = ((currentTime - start_time) * currentSpeed) % 8000;
+                
+                // Change speed
+                currentSpeed = ANIMATION_SPEED;
+                
+                // Adjust start_time to maintain position continuity
+                start_time = currentTime - (currentPosition / currentSpeed);
+                lastSpeedChangeTime = currentTime;
+            }
+        }
+        
+        // Lightning Manager class
+        class LightningManager {
+            constructor(material) {
+                this.material = material;
+                this.isActive = false;
+                this.intensity = 0.0;
+                this.duration = 0;
+                this.maxDuration = 0;
+                this.nextTime = Date.now() + 3000; // Start with a slight delay
+                this.position = new THREE.Vector3();
+                this.flashPhase = 0;
+                this.flashCount = 0;
+                this.maxFlashes = 0;
+            }
+            
+            update(time) {
+              // Check if it's time for new lightning
+              if (!this.isActive && time > this.nextTime) {
+                this.createLightning();
+              }
+              
+              // Update active lightning
+              if (this.isActive) {
+                this.duration--;
+                
+                // Multi-phase lightning flash pattern with more dramatic peaks
+                if (this.flashPhase === 0) {
+                  // Initial bright flash - more intense peak
+                  if (this.duration > this.maxDuration * 0.85) {
+                    // Very fast initial ramp up with higher peak
+                    this.intensity = THREE.MathUtils.lerp(this.intensity, 2.2, 0.6);
+                  } else if (this.duration > this.maxDuration * 0.7) {
+                    // Quick fade down but not all the way
+                    this.intensity = THREE.MathUtils.lerp(this.intensity, 0.2, 0.35);
+                  } else {
+                    // Move to next phase or end
+                    if (this.flashCount < this.maxFlashes) {
+                      // Start another flash
+                      this.flashPhase = 1;
+                      this.duration = Math.floor(this.maxDuration * (0.3 + Math.random() * 0.4)); // 30-70% of initial duration
+                      this.flashCount++;
+                    } else {
+                      // End lightning sequence with gentle fade
+                      this.intensity = THREE.MathUtils.lerp(this.intensity, 0.0, 0.25);
+                      if (this.intensity < 0.05) {
+                        this.resetLightning(time);
+                      }
+                    }
+                  }
+                } else {
+                  // Secondary flashes with more variation
+                  if (this.duration > this.maxDuration * 0.7) {
+                    // Each secondary flash gets a different intensity for variety
+                    const peakIntensity = 0.8 + Math.random() * 0.8;
+                    this.intensity = THREE.MathUtils.lerp(this.intensity, peakIntensity, 0.5); 
+                  } else if (this.duration > this.maxDuration * 0.3) {
+                    // Sustain with gentle pulsing
+                    const pulseAmount = Math.sin(this.duration * 0.4) * 0.1;
+                    this.intensity = THREE.MathUtils.lerp(this.intensity, 0.3 + pulseAmount, 0.2);
+                  } else {
+                    // Fade or prepare for next flash
+                    this.intensity = THREE.MathUtils.lerp(this.intensity, 0.0, 0.2);
+                    if (this.duration <= 0) {
+                      if (this.flashCount < this.maxFlashes && Math.random() < 0.8) {
+                        // 80% chance of another flash if we haven't hit max
+                        this.flashPhase = 1; 
+                        this.duration = Math.floor(this.maxDuration * (0.2 + Math.random() * 0.3)); // 20-50% of initial duration
+                        this.flashCount++;
+                      } else {
+                        // End lightning sequence
+                        this.resetLightning(time);
+                      }
+                    }
+                  }
+                }
+                
+                // Update shader uniform
+                this.material.uniforms.lightningIntensity.value = this.intensity;
+              }
+            }
+            
+            resetLightning(time) {
+              this.isActive = false;
+              this.intensity = 0;
+              this.material.uniforms.lightningIntensity.value = 0;
+              
+              // Calculate realistic time until next lightning
+              // Storms typically have lightning every 20-60 seconds, with clusters possible
+              const isCluster = Math.random() < 0.4; // 40% chance of clustered strikes
+              if (isCluster) {
+                this.nextTime = time + 2000 + Math.random() * 8000; // 2-10 seconds for clustered lightning
+              } else {
+                this.nextTime = time + 10000 + Math.random() * 20000; // 10-30 seconds for isolated strikes
+              }
+            }
+            
+            createLightning() {
+              this.isActive = true;
+              this.intensity = 0.3; // Start at higher intensity
+              
+              // Longer duration for more noticeable effects
+              this.maxDuration = 10 + Math.floor(Math.random() * 15);
+              this.duration = this.maxDuration;
+              
+              // Reset flash counter for multi-flash sequence
+              this.flashPhase = 0;
+              this.flashCount = 0;
+              this.maxFlashes = Math.floor(Math.random() * 4) + 1; // 1-4 additional flashes, always have at least one
+              
+              // Lightning tends to hit taller objects - bias towards higher spots
+              const heightBias = Math.random();
+              
+              // Position lightning - in the direction of travel, scattered for more variety
+              const cameraDirection = new THREE.Vector3(0, 0, -1);
+              cameraDirection.applyQuaternion(camera.quaternion);
+              
+              // Spread out lightning positions more for variety
+              this.position.set(
+                camera.position.x + (Math.random() * 2500 - 1250),
+                camera.position.y + (heightBias * 400 - 100), // Higher bias
+                camera.position.z - 200 - Math.random() * 2500
+              );
+              
+              // Enhanced ethereal colors
+              const colorType = Math.random();
+              let hue, sat, light;
+              
+              if (colorType < 0.6) {
+                // Vivid blue-white (60%)
+                hue = 0.61 + Math.random() * 0.03;
+                sat = 0.18 + Math.random() * 0.1;
+                light = 0.97 + Math.random() * 0.03;
+              } else if (colorType < 0.85) {
+                // Eldritch blue/purple (25%)
+                hue = 0.7 + Math.random() * 0.08;
+                sat = 0.3 + Math.random() * 0.1;
+                light = 0.93 + Math.random() * 0.07;
+              } else if (colorType < 0.95) {
+                // Amber/orange (10%)
+                hue = 0.08 + Math.random() * 0.04;
+                sat = 0.3 + Math.random() * 0.1;
+                light = 0.92 + Math.random() * 0.08;
+              } else {
+                // Rare emerald green (5%)
+                hue = 0.32 + Math.random() * 0.05;
+                sat = 0.25 + Math.random() * 0.1;
+                light = 0.92 + Math.random() * 0.08;
+              }
+              
+              this.material.uniforms.lightningColor.value.setHSL(hue, sat, light);
+              
+              // Update position uniform
+              this.material.uniforms.lightningPosition.value.copy(this.position);
+              
+              // Play thunder with realistic delay based on distance
+              const distanceToCamera = this.position.distanceTo(camera.position);
+              const soundDelay = (distanceToCamera / 343) * 1000;
+              
+              setTimeout(() => {
+                this.playThunder();
+              }, Math.max(500, soundDelay));
+            }
+            
+            playThunder() {
+              // If you want to add thunder sound later, it can be implemented here
+            }
+        }
+
+        // Animation loop
+        function animate() {
+          requestAnimationFrame(animate);
+
+          // Calculate position based on time for consistent speed across devices
+            position = ((Date.now() - start_time) * currentSpeed) % 8000;
+          const currentTime = Date.now();
+
+          // Update camera position
+          camera.position.x += (mouseX - camera.position.x) * 0.01;
+          camera.position.y += (-mouseY - camera.position.y) * 0.01;
+          camera.position.z = -position + 8000;
+
+            // Update stars position
+            if (stars) {
+                // Position main background stars
+                stars.position.z = camera.position.z - 1000;
+                
+                // Very minimal parallax for background stars - they're distant
+                stars.position.x = camera.position.x * 0.05;
+                stars.position.y = camera.position.y * 0.05;
+                
+                // Apply same position to foreground stars but with slightly more parallax
+                const fgStars = scene.getObjectByName("fgStars");
+                if (fgStars) {
+                    fgStars.position.z = camera.position.z - 1000;
+                    fgStars.position.x = camera.position.x * 0.1;
+                    fgStars.position.y = camera.position.y * 0.1;
+                    
+                    // Subtle twinkling just for foreground stars
+                    const starColors = fgStars.geometry.attributes.color;
+                    const starSizes = fgStars.geometry.attributes.size;
+                    const time = Date.now() * 0.0001; // Very slow twinkling
+                    
+                    for (let i = 0; i < fgStars.geometry.attributes.position.count; i++) {
+                        // Each star has its own twinkling cycle
+                        const twinkleFactor = 0.95 + (Math.sin(time + i * 5.3) * 0.05); // Very subtle 0.9-1.0
+                        
+                        // Apply to both color and size
+                        const r = starColors.getX(i) * twinkleFactor;
+                        const g = starColors.getY(i) * twinkleFactor;
+                        const b = starColors.getZ(i) * twinkleFactor;
+                        
+                        starColors.setXYZ(i, r, g, b);
+                        
+                        const size = starSizes.getX(i) * (twinkleFactor + 0.1); // Slightly more variation in size
+                        starSizes.setX(i, size);
+                    }
+                    
+                    starColors.needsUpdate = true;
+                    starSizes.needsUpdate = true;
+                }
+            }
+
+            // Update speedBoost visual effect factor with smooth transition
+            if (currentSpeed === ANIMATION_SPEED_BOOST) {
+                // Transition to full boost over 300ms
+                speedBoostFactor = Math.min(1.0, speedBoostFactor + 0.05);
+            } else {
+                // Transition back to normal over 300ms
+                speedBoostFactor = Math.max(0.0, speedBoostFactor - 0.05);
+            }
+            
+            // Update shader uniform for speed boost effect
+            if (material) {
+                material.uniforms.speedBoost.value = speedBoostFactor;
+            }
+
+            // Update lightning effect
+            lightningManager.update(currentTime);
+
+          // Render scene
+          renderer.render(scene, camera);
+        }
+        
+        // Clean up resources when page is unloaded
+        function dispose() {
+            // Remove event listeners
+            document.removeEventListener('mousemove', onDocumentMouseMove);
+            window.removeEventListener('resize', onWindowResize);
+            document.removeEventListener('keydown', onKeyDown);
+            document.removeEventListener('keyup', onKeyUp);
+            
+            // Dispose geometries
+            if (planesMesh) {
+                planesMesh.geometry.dispose();
+            }
+            if (planesMeshA) {
+                planesMeshA.geometry.dispose();
+            }
+            if (stars) {
+                stars.geometry.dispose();
+                stars.material.dispose();
+            }
+            
+            // Dispose material and textures
+            if (material) {
+                // Dispose textures
+                if (material.uniforms.map && material.uniforms.map.value) {
+                    material.uniforms.map.value.dispose();
+                }
+                material.dispose();
+            }
+            
+            // Clear scene
+            scene.clear();
+            
+            // Dispose renderer
+            renderer.dispose();
+            
+            // Remove canvas from DOM
+            if (renderer.domElement && renderer.domElement.parentNode) {
+                renderer.domElement.parentNode.removeChild(renderer.domElement);
+            }
+            
+            // Null references to aid garbage collection
+            container = null;
+            scene = null;
+            camera = null;
+            renderer = null;
+            material = null;
+            planesMesh = null;
+            planesMeshA = null;
+            lightningManager = null;
+            stars = null;
+        }
+        
+        // Add event listener for cleanup when page unloads
+        window.addEventListener('unload', dispose);
+        
+        // Start the application
+        init();
+
+    </script>
+</body>
+</html> 
