@@ -9,6 +9,7 @@
             margin: 0;
             overflow: hidden;
             font-family: Arial, sans-serif;
+            touch-action: none;
         }
         canvas {
             width: 100%;
@@ -25,6 +26,27 @@
             padding: 20px;
             color: white;
             overflow-y: auto;
+            transition: transform 0.3s ease;
+            z-index: 10;
+            box-sizing: border-box;
+        }
+        #panel-toggle {
+            display: none;
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            width: 44px;
+            height: 44px;
+            border-radius: 8px;
+            background: rgba(0, 0, 0, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            font-size: 22px;
+            cursor: pointer;
+            z-index: 20;
+            -webkit-tap-highlight-color: transparent;
+            align-items: center;
+            justify-content: center;
         }
         .control-group {
             margin-bottom: 20px;
@@ -44,15 +66,32 @@
             width: 100%;
             margin-bottom: 10px;
         }
+        input[type="range"] {
+            height: 28px;
+        }
         input[type="color"] {
-            height: 40px;
+            height: 44px;
             padding: 0;
             border: none;
             background: none;
         }
+        @media (max-width: 600px) {
+            #panel-toggle {
+                display: flex;
+            }
+            #control-panel {
+                width: 75%;
+                max-width: 280px;
+                padding: 16px;
+            }
+            #control-panel.hidden {
+                transform: translateX(100%);
+            }
+        }
     </style>
 </head>
 <body>
+    <button id="panel-toggle">&#9776;</button>
     <div id="control-panel">
         <div class="control-group">
             <h3>Particles</h3>
@@ -123,5 +162,20 @@
     </div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="weather.js"></script>
+    <script>
+        // Mobile panel toggle
+        const panelToggle = document.getElementById('panel-toggle');
+        const controlPanel = document.getElementById('control-panel');
+
+        // Start hidden on mobile
+        if (window.innerWidth <= 600) {
+            controlPanel.classList.add('hidden');
+        }
+
+        panelToggle.addEventListener('click', () => {
+            controlPanel.classList.toggle('hidden');
+            panelToggle.textContent = controlPanel.classList.contains('hidden') ? '\u2630' : '\u2715';
+        });
+    </script>
 </body>
 </html> 
