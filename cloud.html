@@ -768,7 +768,7 @@
         let isTouchingBoost = false;
 
         function onTouchStart(event) {
-            if (event.target.id === 'boost-btn') return;
+            if (event.target.id === 'boost-btn' || event.target.id === 'sound-btn') return;
             event.preventDefault();
             const touch = event.touches[0];
             touchStartX = touch.clientX;
@@ -778,7 +778,7 @@
         }
 
         function onTouchMove(event) {
-            if (event.target.id === 'boost-btn') return;
+            if (event.target.id === 'boost-btn' || event.target.id === 'sound-btn') return;
             event.preventDefault();
             const touch = event.touches[0];
             mouseX = (touch.clientX - windowHalfX) * 0.25;
