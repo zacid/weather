@@ -2,11 +2,14 @@
 <html>
 <head>
     <title>Flying Through Clouds</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
     <style>
         body {
             background-color: #000000;
             margin: 0;
             overflow: hidden;
+            touch-action: none;
         }
         .container {
             width: 100%;
@@ -18,10 +21,42 @@
             height: 100%;
             display: block;
         }
+        #boost-btn {
+            display: none;
+            position: fixed;
+            bottom: 40px;
+            right: 40px;
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.15);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            font-size: 12px;
+            font-family: Arial, sans-serif;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            cursor: pointer;
+            z-index: 100;
+            -webkit-tap-highlight-color: transparent;
+            transition: background 0.2s;
+        }
+        #boost-btn:active, #boost-btn.active {
+            background: rgba(100, 150, 255, 0.4);
+            border-color: rgba(100, 150, 255, 0.6);
+        }
+        @media (pointer: coarse), (max-width: 768px) {
+            #boost-btn {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+        }
     </style>
 </head>
 <body>
     <div class="container"></div>
+    <button id="boost-btn">Boost</button>
     
     <script type="importmap">
         {
@@ -198,10 +233,22 @@
             // Add event listeners
             document.addEventListener('mousemove', onDocumentMouseMove, false);
             window.addEventListener('resize', onWindowResize, false);
-            
+
             // Add keyboard event listeners for spacebar speed control
             document.addEventListener('keydown', onKeyDown, false);
             document.addEventListener('keyup', onKeyUp, false);
+
+            // Touch support
+            document.addEventListener('touchstart', onTouchStart, { passive: false });
+            document.addEventListener('touchmove', onTouchMove, { passive: false });
+            document.addEventListener('touchend', onTouchEnd, { passive: false });
+
+            // On-screen boost button
+            const boostBtn = document.getElementById('boost-btn');
+            boostBtn.addEventListener('touchstart', onBoostStart, { passive: false });
+            boostBtn.addEventListener('touchend', onBoostEnd, { passive: false });
+            boostBtn.addEventListener('mousedown', onBoostStart);
+            boostBtn.addEventListener('mouseup', onBoostEnd);
         }
         
         // Load cloud texture with better error handling
@@ -549,6 +596,60 @@
             mouseY = (event.clientY - windowHalfY) * 0.15;
         }
 
+        // Touch event handlers
+        let touchStartX = 0, touchStartY = 0;
+        let isTouchingBoost = false;
+
+        function onTouchStart(event) {
+            if (event.target.id === 'boost-btn') return;
+            event.preventDefault();
+            const touch = event.touches[0];
+            touchStartX = touch.clientX;
+            touchStartY = touch.clientY;
+            mouseX = (touch.clientX - windowHalfX) * 0.25;
+            mouseY = (touch.clientY - windowHalfY) * 0.15;
+        }
+
+        function onTouchMove(event) {
+            if (event.target.id === 'boost-btn') return;
+            event.preventDefault();
+            const touch = event.touches[0];
+            mouseX = (touch.clientX - windowHalfX) * 0.25;
+            mouseY = (touch.clientY - windowHalfY) * 0.15;
+        }
+
+        function onTouchEnd(event) {
+            // Let camera drift to center gradually
+        }
+
+        function onBoostStart(event) {
+            event.preventDefault();
+            isTouchingBoost = true;
+            document.getElementById('boost-btn').classList.add('active');
+            // Reuse the same speed logic as keydown
+            if (currentSpeed !== ANIMATION_SPEED_BOOST) {
+                const currentTime = Date.now();
+                const currentPosition = ((currentTime - start_time) * currentSpeed) % 8000;
+                currentSpeed = ANIMATION_SPEED_BOOST;
+                start_time = currentTime - (currentPosition / currentSpeed);
+                lastSpeedChangeTime = currentTime;
+            }
+        }
+
+        function onBoostEnd(event) {
+            event.preventDefault();
+            isTouchingBoost = false;
+            document.getElementById('boost-btn').classList.remove('active');
+            // Reuse the same speed logic as keyup
+            if (currentSpeed !== ANIMATION_SPEED) {
+                const currentTime = Date.now();
+                const currentPosition = ((currentTime - start_time) * currentSpeed) % 8000;
+                currentSpeed = ANIMATION_SPEED;
+                start_time = currentTime - (currentPosition / currentSpeed);
+                lastSpeedChangeTime = currentTime;
+            }
+        }
+
         function onWindowResize() {
             windowHalfX = window.innerWidth / 2;
             windowHalfY = window.innerHeight / 2;
@@ -846,6 +947,9 @@
             window.removeEventListener('resize', onWindowResize);
             document.removeEventListener('keydown', onKeyDown);
             document.removeEventListener('keyup', onKeyUp);
+            document.removeEventListener('touchstart', onTouchStart);
+            document.removeEventListener('touchmove', onTouchMove);
+            document.removeEventListener('touchend', onTouchEnd);
             
             // Dispose geometries
             if (planesMesh) {
