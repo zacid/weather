@@ -412,10 +412,15 @@
 
             // Sound toggle button
             const soundBtn = document.getElementById('sound-btn');
-            soundBtn.addEventListener('click', () => {
+            function doToggleSound() {
                 skyAudio.toggle();
                 soundBtn.textContent = skyAudio.muted ? '\u{1F509}' : '\u{1F50A}';
-            });
+            }
+            soundBtn.addEventListener('touchend', (e) => {
+                e.preventDefault(); // Prevents duplicate click from firing
+                doToggleSound();
+            }, { passive: false });
+            soundBtn.addEventListener('click', doToggleSound);
         }
         
         // Load cloud texture with better error handling
