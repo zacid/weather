@@ -75,6 +75,24 @@
             border: none;
             background: none;
         }
+        #sound-btn {
+            position: fixed;
+            bottom: 10px;
+            left: 10px;
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            background: rgba(0, 0, 0, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+            z-index: 20;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            -webkit-tap-highlight-color: transparent;
+        }
         @media (max-width: 600px) {
             #panel-toggle {
                 display: flex;
@@ -92,6 +110,7 @@
 </head>
 <body>
     <button id="panel-toggle">&#9776;</button>
+    <button id="sound-btn" title="Toggle Sound">&#128263;</button>
     <div id="control-panel">
         <div class="control-group">
             <h3>Particles</h3>
@@ -175,6 +194,13 @@
         panelToggle.addEventListener('click', () => {
             controlPanel.classList.toggle('hidden');
             panelToggle.textContent = controlPanel.classList.contains('hidden') ? '\u2630' : '\u2715';
+        });
+
+        // Sound toggle
+        const soundBtn = document.getElementById('sound-btn');
+        soundBtn.addEventListener('click', () => {
+            stormAudio.toggle();
+            soundBtn.textContent = stormAudio.muted ? '\u{1F509}' : '\u{1F50A}';
         });
     </script>
 </body>
