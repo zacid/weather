@@ -45,6 +45,24 @@
             background: rgba(100, 150, 255, 0.4);
             border-color: rgba(100, 150, 255, 0.6);
         }
+        #sound-btn {
+            position: fixed;
+            bottom: 40px;
+            left: 40px;
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.15);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            -webkit-tap-highlight-color: transparent;
+        }
         @media (pointer: coarse), (max-width: 768px) {
             #boost-btn {
                 display: flex;
@@ -57,6 +75,7 @@
 <body>
     <div class="container"></div>
     <button id="boost-btn">Boost</button>
+    <button id="sound-btn" title="Toggle Sound">&#128263;</button>
     
     <script type="importmap">
         {
@@ -184,6 +203,147 @@
           `
         };
 
+        // ---- Procedural Audio System ----
+        class SkyAudio {
+            constructor() {
+                this.ctx = null;
+                this.masterGain = null;
+                this.windGain = null;
+                this.windFilter = null;
+                this.windSource = null;
+                this.muted = true;
+                this.started = false;
+            }
+
+            init() {
+                this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                this.masterGain = this.ctx.createGain();
+                this.masterGain.gain.value = 0.6;
+                this.masterGain.connect(this.ctx.destination);
+                this.startWind();
+                this.started = true;
+                this.muted = false;
+            }
+
+            toggle() {
+                if (!this.started) {
+                    this.init();
+                    return;
+                }
+                if (this.ctx.state === 'suspended') {
+                    this.ctx.resume();
+                }
+                this.muted = !this.muted;
+                this.masterGain.gain.linearRampToValueAtTime(
+                    this.muted ? 0 : 0.6, this.ctx.currentTime + 0.3
+                );
+            }
+
+            startWind() {
+                // Create noise buffer for wind
+                const bufferSize = this.ctx.sampleRate * 2;
+                const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) {
+                    data[i] = Math.random() * 2 - 1;
+                }
+
+                this.windSource = this.ctx.createBufferSource();
+                this.windSource.buffer = buffer;
+                this.windSource.loop = true;
+
+                // Low-pass filter for wind character
+                this.windFilter = this.ctx.createBiquadFilter();
+                this.windFilter.type = 'lowpass';
+                this.windFilter.frequency.value = 600;
+                this.windFilter.Q.value = 1.0;
+
+                // Second filter for warmth
+                const warmth = this.ctx.createBiquadFilter();
+                warmth.type = 'bandpass';
+                warmth.frequency.value = 300;
+                warmth.Q.value = 0.3;
+
+                this.windGain = this.ctx.createGain();
+                this.windGain.gain.value = 0.25;
+
+                this.windSource.connect(this.windFilter);
+                this.windFilter.connect(warmth);
+                warmth.connect(this.windGain);
+                this.windGain.connect(this.masterGain);
+                this.windSource.start();
+            }
+
+            setBoost(isBoosting) {
+                if (!this.started || !this.windFilter) return;
+                const target = isBoosting ? 1500 : 600;
+                const gainTarget = isBoosting ? 0.45 : 0.25;
+                this.windFilter.frequency.linearRampToValueAtTime(
+                    target, this.ctx.currentTime + 0.5
+                );
+                this.windGain.gain.linearRampToValueAtTime(
+                    gainTarget, this.ctx.currentTime + 0.5
+                );
+            }
+
+            playThunder(distance) {
+                if (!this.started || this.muted) return;
+                const now = this.ctx.currentTime;
+
+                // Scale volume by distance (closer = louder)
+                const volumeScale = Math.max(0.2, 1.0 - (distance / 3000));
+
+                // Noise-based thunder
+                const bufferSize = this.ctx.sampleRate * 4;
+                const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) {
+                    data[i] = Math.random() * 2 - 1;
+                }
+
+                const noiseSource = this.ctx.createBufferSource();
+                noiseSource.buffer = buffer;
+
+                const lowpass = this.ctx.createBiquadFilter();
+                lowpass.type = 'lowpass';
+                lowpass.frequency.value = 60 + Math.random() * 80;
+                lowpass.Q.value = 2.0;
+
+                const thunderGain = this.ctx.createGain();
+                thunderGain.gain.setValueAtTime(0, now);
+                thunderGain.gain.linearRampToValueAtTime(volumeScale, now + 0.06);
+                thunderGain.gain.exponentialRampToValueAtTime(volumeScale * 0.4, now + 0.5);
+                thunderGain.gain.exponentialRampToValueAtTime(0.01, now + 3 + Math.random() * 1.5);
+
+                noiseSource.connect(lowpass);
+                lowpass.connect(thunderGain);
+                thunderGain.connect(this.masterGain);
+                noiseSource.start(now);
+                noiseSource.stop(now + 4.5);
+
+                // Sub-bass rumble
+                const rumble = this.ctx.createOscillator();
+                rumble.type = 'sine';
+                rumble.frequency.value = 25 + Math.random() * 25;
+                const rumbleGain = this.ctx.createGain();
+                rumbleGain.gain.setValueAtTime(0, now);
+                rumbleGain.gain.linearRampToValueAtTime(0.2 * volumeScale, now + 0.1);
+                rumbleGain.gain.exponentialRampToValueAtTime(0.01, now + 2.5 + Math.random());
+                rumble.connect(rumbleGain);
+                rumbleGain.connect(this.masterGain);
+                rumble.start(now);
+                rumble.stop(now + 3.5);
+            }
+
+            dispose() {
+                if (this.ctx) {
+                    this.ctx.close();
+                }
+            }
+        }
+
+        const skyAudio = new SkyAudio();
+
         // Scene variables
         let container, scene, camera, renderer;
         let position, mouseX = 0, mouseY = 0;
@@ -249,6 +409,13 @@
             boostBtn.addEventListener('touchend', onBoostEnd, { passive: false });
             boostBtn.addEventListener('mousedown', onBoostStart);
             boostBtn.addEventListener('mouseup', onBoostEnd);
+
+            // Sound toggle button
+            const soundBtn = document.getElementById('sound-btn');
+            soundBtn.addEventListener('click', () => {
+                skyAudio.toggle();
+                soundBtn.textContent = skyAudio.muted ? '\u{1F509}' : '\u{1F50A}';
+            });
         }
         
         // Load cloud texture with better error handling
@@ -633,6 +800,7 @@
                 currentSpeed = ANIMATION_SPEED_BOOST;
                 start_time = currentTime - (currentPosition / currentSpeed);
                 lastSpeedChangeTime = currentTime;
+                skyAudio.setBoost(true);
             }
         }
 
@@ -647,6 +815,7 @@
                 currentSpeed = ANIMATION_SPEED;
                 start_time = currentTime - (currentPosition / currentSpeed);
                 lastSpeedChangeTime = currentTime;
+                skyAudio.setBoost(false);
             }
         }
 
@@ -670,16 +839,17 @@
                 // Calculate current position before speed change
                 const currentTime = Date.now();
                 const currentPosition = ((currentTime - start_time) * currentSpeed) % 8000;
-                
+
                 // Change speed
                 currentSpeed = ANIMATION_SPEED_BOOST;
-                
+
                 // Adjust start_time to maintain position continuity
                 start_time = currentTime - (currentPosition / currentSpeed);
                 lastSpeedChangeTime = currentTime;
+                skyAudio.setBoost(true);
             }
         }
-        
+
         // Handle key release events
         function onKeyUp(event) {
             // Check if spacebar was released
@@ -687,13 +857,14 @@
                 // Calculate current position before speed change
                 const currentTime = Date.now();
                 const currentPosition = ((currentTime - start_time) * currentSpeed) % 8000;
-                
+
                 // Change speed
                 currentSpeed = ANIMATION_SPEED;
-                
+
                 // Adjust start_time to maintain position continuity
                 start_time = currentTime - (currentPosition / currentSpeed);
                 lastSpeedChangeTime = currentTime;
+                skyAudio.setBoost(false);
             }
         }
         
@@ -861,7 +1032,8 @@
             }
             
             playThunder() {
-              // If you want to add thunder sound later, it can be implemented here
+              const dist = this.position.distanceTo(camera.position);
+              skyAudio.playThunder(dist);
             }
         }
 
@@ -983,6 +1155,9 @@
                 renderer.domElement.parentNode.removeChild(renderer.domElement);
             }
             
+            // Dispose audio
+            skyAudio.dispose();
+
             // Null references to aid garbage collection
             container = null;
             scene = null;

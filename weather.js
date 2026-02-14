@@ -267,6 +267,8 @@ function animate() {
                 300 + Math.random() * 200,
                 100
             );
+            // Trigger thunder sound with slight delay
+            setTimeout(() => stormAudio.playThunder(), 300 + Math.random() * 800);
         }
         flash.power = 50 + Math.random() * 500;
     }
@@ -283,6 +285,132 @@ function onWindowResize() {
     renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
+// ---- Procedural Audio System ----
+class StormAudio {
+    constructor() {
+        this.ctx = null;
+        this.masterGain = null;
+        this.rainGain = null;
+        this.rainSource = null;
+        this.muted = true;
+        this.started = false;
+    }
+
+    init() {
+        this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        this.masterGain = this.ctx.createGain();
+        this.masterGain.gain.value = 0.7;
+        this.masterGain.connect(this.ctx.destination);
+        this.startRain();
+        this.started = true;
+        this.muted = false;
+    }
+
+    toggle() {
+        if (!this.started) {
+            this.init();
+            return;
+        }
+        if (this.ctx.state === 'suspended') {
+            this.ctx.resume();
+        }
+        this.muted = !this.muted;
+        this.masterGain.gain.linearRampToValueAtTime(
+            this.muted ? 0 : 0.7, this.ctx.currentTime + 0.3
+        );
+    }
+
+    startRain() {
+        // Create 2 seconds of white noise buffer
+        const bufferSize = this.ctx.sampleRate * 2;
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+            data[i] = Math.random() * 2 - 1;
+        }
+
+        this.rainSource = this.ctx.createBufferSource();
+        this.rainSource.buffer = buffer;
+        this.rainSource.loop = true;
+
+        // Bandpass filter to shape noise into rain-like sound
+        const bandpass = this.ctx.createBiquadFilter();
+        bandpass.type = 'bandpass';
+        bandpass.frequency.value = 3000;
+        bandpass.Q.value = 0.5;
+
+        // Highpass to remove low rumble
+        const highpass = this.ctx.createBiquadFilter();
+        highpass.type = 'highpass';
+        highpass.frequency.value = 1000;
+
+        this.rainGain = this.ctx.createGain();
+        this.rainGain.gain.value = 0.3;
+
+        this.rainSource.connect(bandpass);
+        bandpass.connect(highpass);
+        highpass.connect(this.rainGain);
+        this.rainGain.connect(this.masterGain);
+        this.rainSource.start();
+    }
+
+    playThunder() {
+        if (!this.started || this.muted) return;
+        const now = this.ctx.currentTime;
+
+        // Create noise buffer for thunder texture
+        const bufferSize = this.ctx.sampleRate * 3;
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+            data[i] = Math.random() * 2 - 1;
+        }
+
+        const noiseSource = this.ctx.createBufferSource();
+        noiseSource.buffer = buffer;
+
+        // Low-pass filter for deep rumble
+        const lowpass = this.ctx.createBiquadFilter();
+        lowpass.type = 'lowpass';
+        lowpass.frequency.value = 80 + Math.random() * 60;
+        lowpass.Q.value = 1.5;
+
+        // Gain envelope: sharp attack, long decay
+        const thunderGain = this.ctx.createGain();
+        thunderGain.gain.setValueAtTime(0, now);
+        thunderGain.gain.linearRampToValueAtTime(0.8 + Math.random() * 0.2, now + 0.05);
+        thunderGain.gain.exponentialRampToValueAtTime(0.3, now + 0.4);
+        thunderGain.gain.exponentialRampToValueAtTime(0.01, now + 2.5 + Math.random());
+
+        noiseSource.connect(lowpass);
+        lowpass.connect(thunderGain);
+        thunderGain.connect(this.masterGain);
+        noiseSource.start(now);
+        noiseSource.stop(now + 3.5);
+
+        // Add a secondary rumble layer
+        const rumbleOsc = this.ctx.createOscillator();
+        rumbleOsc.type = 'sine';
+        rumbleOsc.frequency.value = 30 + Math.random() * 20;
+        const rumbleGain = this.ctx.createGain();
+        rumbleGain.gain.setValueAtTime(0, now);
+        rumbleGain.gain.linearRampToValueAtTime(0.15, now + 0.08);
+        rumbleGain.gain.exponentialRampToValueAtTime(0.01, now + 2 + Math.random());
+        rumbleOsc.connect(rumbleGain);
+        rumbleGain.connect(this.masterGain);
+        rumbleOsc.start(now);
+        rumbleOsc.stop(now + 3);
+    }
+
+    dispose() {
+        if (this.ctx) {
+            this.ctx.close();
+        }
+    }
+}
+
+const stormAudio = new StormAudio();
+
 // Initialize controls
 setupControls();
 
@@ -290,4 +418,4 @@ setupControls();
 initRain();
 
 // Start animation
-animate(); 
+animate();
