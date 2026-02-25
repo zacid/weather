@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Storm Simulator</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { overflow: hidden; background: #000; font-family: 'Segoe UI', Arial, sans-serif; }
+        canvas { display: block; }
+
+        #lightning-canvas {
+            position: fixed; top: 0; left: 0;
+            width: 100%; height: 100%;
+            pointer-events: none; z-index: 2;
+        }
+
+        #flash-overlay {
+            position: fixed; top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(180, 200, 255, 0.7);
+            opacity: 0; pointer-events: none; z-index: 3;
+        }
+
+        #controls {
+            position: fixed; bottom: 0; left: 0; right: 0;
+            display: flex; align-items: center; gap: 16px;
+            padding: 20px 28px;
+            background: linear-gradient(transparent, rgba(0,0,0,0.8));
+            z-index: 10; opacity: 0.7; transition: opacity 0.3s;
+        }
+        #controls:hover { opacity: 1; }
+
+        .ctrl-btn {
+            width: 44px; height: 44px; border-radius: 50%;
+            background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
+            color: white; font-size: 20px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .ctrl-btn:hover { background: rgba(255,255,255,0.18); }
+
+        .slider-group {
+            flex: 1; display: flex; align-items: center; gap: 14px;
+        }
+        .slider-group label {
+            color: rgba(255,255,255,0.6); font-size: 11px;
+            text-transform: uppercase; letter-spacing: 2px; white-space: nowrap;
+        }
+        .slider-group input[type="range"] {
+            flex: 1; height: 4px; -webkit-appearance: none;
+            background: rgba(255,255,255,0.12); border-radius: 2px; outline: none;
+        }
+        .slider-group input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none; width: 18px; height: 18px;
+            border-radius: 50%; background: rgba(255,255,255,0.9); cursor: pointer;
+            border: 2px solid rgba(100,140,200,0.6);
+        }
+
+        #intensity-label {
+            color: rgba(255,255,255,0.45); font-size: 11px;
+            min-width: 65px; text-align: right; letter-spacing: 1px;
+        }
+    </style>
+</head>
+<body>
+    <div id="flash-overlay"></div>
+    <canvas id="lightning-canvas"></canvas>
+
+    <div id="controls">
+        <button id="sound-btn" class="ctrl-btn" title="Toggle Sound">&#128263;</button>
+        <div class="slider-group">
+            <label>Storm</label>
+            <input type="range" id="intensity" min="0" max="100" value="55">
+            <span id="intensity-label">Heavy</span>
+        </div>
+        <button id="fs-btn" class="ctrl-btn" title="Fullscreen">&#x26F6;</button>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+    (function () {
+        'use strict';
+
+        // ======================== CONFIGURATION ========================
+        var MAX_RAIN = 22000;
+        var MAX_SPLASHES = 400;
+        var CLOUD_COUNT = 55;
+        var CLOUD_HEIGHT = 110;
+        var RAIN_AREA = 220;
+        var BG_COLOR = 0x020208;
+
+        // ======================== STATE ========================
+        var state = {
+            intensity: 0.55,
+            wind: { x: 0, z: 0 },
+            gustPhase: Math.random() * 100,
+            flashAlpha: 0,
+            shakeIntensity: 0,
+            mouseX: 0,
+            mouseY: 0
+        };
+
+        // ======================== SCENE ========================
+        var scene = new THREE.Scene();
+        scene.background = new THREE.Color(BG_COLOR);
+        scene.fog = new THREE.FogExp2(BG_COLOR, 0.004);
+
+        var camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.1, 2000);
+        camera.position.set(0, 1.7, 0);
+        camera.rotation.order = 'YXZ';
+
+        var renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 0.6;
+        document.body.insertBefore(renderer.domElement, document.body.firstChild);
+
+        // Lightning 2D overlay canvas
+        var lCanvas = document.getElementById('lightning-canvas');
+        var lCtx = lCanvas.getContext('2d');
+        function resizeLCanvas() {
+            var dpr = Math.min(window.devicePixelRatio, 2);
+            lCanvas.width = window.innerWidth * dpr;
+            lCanvas.height = window.innerHeight * dpr;
+            lCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+        resizeLCanvas();
+
+        var flashOverlay = document.getElementById('flash-overlay');
+
+        // ======================== LIGHTING ========================
+        var ambient = new THREE.AmbientLight(0x080818, 0.25);
+        scene.add(ambient);
+
+        var hemi = new THREE.HemisphereLight(0x0a0a25, 0x050508, 0.15);
+        scene.add(hemi);
+
+        var flashLight = new THREE.PointLight(0xc0d8ff, 0, 700, 1.5);
+        flashLight.position.set(0, CLOUD_HEIGHT, 0);
+        scene.add(flashLight);
+
+        // ======================== GROUND ========================
+        var groundGeo = new THREE.PlaneGeometry(2000, 2000);
+        var groundMat = new THREE.MeshStandardMaterial({
+            color: 0x080808,
+            roughness: 0.12,
+            metalness: 0.45,
+            emissive: new THREE.Color(0x000000)
+        });
+        var ground = new THREE.Mesh(groundGeo, groundMat);
+        ground.rotation.x = -Math.PI / 2;
+        scene.add(ground);
+
+        // ======================== CLOUDS ========================
+        var cloudTexture = new THREE.TextureLoader().load('images/smoke.png');
+        var cloudGeo = new THREE.PlaneGeometry(280, 280);
+        var clouds = [];
+
+        for (var c = 0; c < CLOUD_COUNT; c++) {
+            var cMat = new THREE.MeshLambertMaterial({
+                map: cloudTexture, transparent: true,
+                opacity: 0.2 + Math.random() * 0.35,
+                depthWrite: false, side: THREE.DoubleSide
+            });
+            var cloud = new THREE.Mesh(cloudGeo, cMat);
+            cloud.position.set(
+                (Math.random() - 0.5) * 900,
+                CLOUD_HEIGHT + (Math.random() - 0.5) * 35,
+                (Math.random() - 0.5) * 900
+            );
+            cloud.rotation.x = -Math.PI / 2 + (Math.random() - 0.5) * 0.25;
+            cloud.rotation.z = Math.random() * Math.PI * 2;
+            cloud.userData.baseOpacity = cMat.opacity;
+            cloud.userData.rotSpeed = (Math.random() - 0.5) * 0.0008;
+            cloud.scale.setScalar(1 + Math.random() * 2);
+            clouds.push(cloud);
+            scene.add(cloud);
+        }
+
+        // ======================== RAIN (line segments for streaks) ========================
+        var rainPositions = new Float32Array(MAX_RAIN * 6);
+        var rainVelocities = new Float32Array(MAX_RAIN);
+
+        function resetDrop(i) {
+            var x = (Math.random() - 0.5) * RAIN_AREA * 2;
+            var y = Math.random() * (CLOUD_HEIGHT + 30);
+            var z = (Math.random() - 0.5) * RAIN_AREA * 2;
+            var idx = i * 6;
+            rainPositions[idx] = x;
+            rainPositions[idx + 1] = y;
+            rainPositions[idx + 2] = z;
+            rainPositions[idx + 3] = x;
+            rainPositions[idx + 4] = y + 0.4;
+            rainPositions[idx + 5] = z;
+            rainVelocities[i] = 0.4 + Math.random() * 0.6;
+        }
+
+        for (var r = 0; r < MAX_RAIN; r++) resetDrop(r);
+
+        var rainGeo = new THREE.BufferGeometry();
+        rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPositions, 3));
+        var rainMat = new THREE.LineBasicMaterial({
+            color: 0x7788aa, transparent: true, opacity: 0.25
+        });
+        var rainMesh = new THREE.LineSegments(rainGeo, rainMat);
+        scene.add(rainMesh);
+
+        function updateRain() {
+            var pos = rainGeo.attributes.position.array;
+            var active = Math.floor(state.intensity * MAX_RAIN);
+            var fall = 0.7 + state.intensity * 1.5;
+            var sLen = 0.25 + state.intensity * 1.2;
+            var wx = state.wind.x, wz = state.wind.z;
+
+            for (var i = 0; i < MAX_RAIN; i++) {
+                var idx = i * 6;
+                if (i >= active) {
+                    pos[idx + 1] = -500; pos[idx + 4] = -500;
+                    continue;
+                }
+                var spd = rainVelocities[i] * fall;
+                pos[idx] += wx * 0.25;
+                pos[idx + 1] -= spd;
+                pos[idx + 2] += wz * 0.25;
+                pos[idx + 3] = pos[idx] + wx * sLen * 0.25;
+                pos[idx + 4] = pos[idx + 1] + spd * sLen;
+                pos[idx + 5] = pos[idx + 2] + wz * sLen * 0.25;
+
+                if (pos[idx + 1] < 0) {
+                    if (Math.random() < 0.03) createSplash(pos[idx], pos[idx + 2]);
+                    resetDrop(i);
+                }
+            }
+            rainGeo.attributes.position.needsUpdate = true;
+            rainMat.opacity = 0.12 + state.intensity * 0.38;
+        }
+
+        // ======================== SPLASH SYSTEM ========================
+        var splashPos = new Float32Array(MAX_SPLASHES * 3);
+        var splashVel = new Float32Array(MAX_SPLASHES);
+        var splashLife = new Float32Array(MAX_SPLASHES);
+        var nextSplash = 0;
+
+        for (var s = 0; s < MAX_SPLASHES * 3; s += 3) splashPos[s + 1] = -500;
+
+        var splashGeo = new THREE.BufferGeometry();
+        splashGeo.setAttribute('position', new THREE.BufferAttribute(splashPos, 3));
+        var splashMat = new THREE.PointsMaterial({
+            color: 0x6688aa, size: 0.12, transparent: true, opacity: 0.35, sizeAttenuation: true
+        });
+        scene.add(new THREE.Points(splashGeo, splashMat));
+
+        function createSplash(x, z) {
+            var idx = nextSplash * 3;
+            splashPos[idx] = x;
+            splashPos[idx + 1] = 0.05;
+            splashPos[idx + 2] = z;
+            splashVel[nextSplash] = 0.04 + Math.random() * 0.08;
+            splashLife[nextSplash] = 1.0;
+            nextSplash = (nextSplash + 1) % MAX_SPLASHES;
+        }
+
+        function updateSplashes() {
+            var p = splashGeo.attributes.position.array;
+            for (var i = 0; i < MAX_SPLASHES; i++) {
+                if (splashLife[i] > 0) {
+                    var idx = i * 3;
+                    p[idx + 1] += splashVel[i];
+                    splashVel[i] -= 0.0025;
+                    splashLife[i] -= 0.06;
+                    if (splashLife[i] <= 0 || p[idx + 1] < 0) {
+                        p[idx + 1] = -500;
+                        splashLife[i] = 0;
+                    }
+                }
+            }
+            splashGeo.attributes.position.needsUpdate = true;
+        }
+
+        // ======================== WIND ========================
+        function updateWind(t) {
+            var base = state.intensity * 3.5;
+            state.gustPhase += 0.012;
+            var gust = Math.sin(state.gustPhase) * 0.45
+                     + Math.sin(state.gustPhase * 2.7) * 0.35
+                     + Math.sin(state.gustPhase * 6.1) * 0.2;
+            var str = base * (1 + gust * state.intensity);
+            var angle = Math.sin(t * 0.00025) * 0.6;
+            state.wind.x = Math.sin(angle) * str;
+            state.wind.z = Math.cos(angle) * str * 0.25;
+        }
+
+        // ======================== LIGHTNING SYSTEM ========================
+        var activeBolts = [];
+        var nextLightningTime = performance.now() + 2000;
+
+        function shouldFire(t) {
+            if (t < nextLightningTime || state.intensity < 0.08) return false;
+            var interval = 18000 * (1 - state.intensity * 0.92);
+            nextLightningTime = t + interval * 0.2 + Math.random() * interval;
+            return true;
+        }
+
+        function genBolt(sx, sy, sz) {
+            var path = [{ x: sx, y: sy, z: sz }];
+            var branches = [];
+            var x = sx, y = sy, z = sz;
+            var tx = sx + (Math.random() - 0.5) * 120;
+            var tz = sz + (Math.random() - 0.5) * 120;
+            var segs = 18 + Math.floor(Math.random() * 18);
+            var segH = sy / segs;
+
+            for (var i = 0; i < segs; i++) {
+                var prog = i / segs;
+                var dev = 35 * (1 - prog * 0.5);
+                x += (Math.random() - 0.5) * dev + (tx - x) * 0.04;
+                y -= segH + Math.random() * segH * 0.3;
+                z += (Math.random() - 0.5) * dev * 0.3 + (tz - z) * 0.04;
+                if (y < 0) y = 0;
+                path.push({ x: x, y: y, z: z });
+                if (Math.random() < 0.28 * (1 - prog) && i > 2) {
+                    branches.push(genBranch(x, y, z, (segs - i) * 0.4));
+                }
+                if (y <= 0) break;
+            }
+            return { path: path, branches: branches, alpha: 1, fade: 0.018 + Math.random() * 0.012 };
+        }
+
+        function genBranch(sx, sy, sz, max) {
+            var b = [{ x: sx, y: sy, z: sz }];
+            var x = sx, y = sy, z = sz;
+            var n = Math.floor(3 + Math.random() * max);
+            var a = (Math.random() - 0.5) * Math.PI * 0.6;
+            for (var i = 0; i < n; i++) {
+                x += Math.sin(a) * (12 + Math.random() * 14) + (Math.random() - 0.5) * 8;
+                y -= 5 + Math.random() * 10;
+                z += (Math.random() - 0.5) * 8;
+                if (y < 0) break;
+                b.push({ x: x, y: y, z: z });
+            }
+            return b;
+        }
+
+        function triggerLightning() {
+            var bx = (Math.random() - 0.5) * 500;
+            var bz = -80 - Math.random() * 400;
+            var by = CLOUD_HEIGHT + Math.random() * 15;
+
+            var bolt = genBolt(bx, by, bz);
+            activeBolts.push(bolt);
+
+            flashLight.position.set(bx, CLOUD_HEIGHT, bz);
+
+            var dist = Math.sqrt(bx * bx + bz * bz);
+            var strength = Math.max(0.08, 1.0 - dist / 500);
+
+            state.flashAlpha = strength;
+            flashLight.intensity = 35 * strength;
+
+            if (dist < 250) state.shakeIntensity = Math.max(state.shakeIntensity, (1 - dist / 250) * 0.6);
+
+            groundMat.emissive.setRGB(0.08 * strength, 0.09 * strength, 0.12 * strength);
+
+            var delay = Math.max(150, (dist / 343) * 1000);
+            setTimeout(function () {
+                stormAudio.playThunder(dist);
+                if (dist < 300) state.shakeIntensity = Math.max(state.shakeIntensity, (1 - dist / 300) * 0.35);
+            }, delay);
+
+            // Multi-flash: chance of a second bolt
+            if (Math.random() < 0.45) {
+                setTimeout(function () {
+                    var b2 = genBolt(bx + (Math.random() - 0.5) * 40, by, bz + (Math.random() - 0.5) * 40);
+                    activeBolts.push(b2);
+                    state.flashAlpha = strength * 0.8;
+                    flashLight.intensity = 25 * strength;
+                    groundMat.emissive.setRGB(0.06 * strength, 0.07 * strength, 0.1 * strength);
+                }, 80 + Math.random() * 150);
+            }
+        }
+
+        function drawBolts() {
+            lCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+            for (var b = activeBolts.length - 1; b >= 0; b--) {
+                var bolt = activeBolts[b];
+                if (bolt.alpha <= 0) { activeBolts.splice(b, 1); continue; }
+                drawPath(bolt.path, bolt.alpha, 2.5, true);
+                for (var j = 0; j < bolt.branches.length; j++) {
+                    drawPath(bolt.branches[j], bolt.alpha * 0.65, 1.5, false);
+                }
+                bolt.alpha -= bolt.fade;
+            }
+        }
+
+        function drawPath(path, alpha, lw, glow) {
+            if (path.length < 2) return;
+            var pts = [];
+            for (var i = 0; i < path.length; i++) {
+                var v = new THREE.Vector3(path[i].x, path[i].y, path[i].z);
+                v.project(camera);
+                if (v.z > 1) continue;
+                pts.push({
+                    x: (v.x * 0.5 + 0.5) * window.innerWidth,
+                    y: (-v.y * 0.5 + 0.5) * window.innerHeight
+                });
+            }
+            if (pts.length < 2) return;
+
+            if (glow) {
+                lCtx.save();
+                lCtx.shadowColor = 'rgba(140,170,255,' + (alpha * 0.5) + ')';
+                lCtx.shadowBlur = 35;
+                lCtx.strokeStyle = 'rgba(140,170,255,' + (alpha * 0.25) + ')';
+                lCtx.lineWidth = lw * 5;
+                lCtx.lineCap = 'round';
+                lCtx.lineJoin = 'round';
+                lCtx.beginPath();
+                lCtx.moveTo(pts[0].x, pts[0].y);
+                for (var k = 1; k < pts.length; k++) lCtx.lineTo(pts[k].x, pts[k].y);
+                lCtx.stroke();
+                lCtx.restore();
+            }
+
+            lCtx.save();
+            lCtx.shadowColor = 'rgba(200,220,255,' + (alpha * 0.7) + ')';
+            lCtx.shadowBlur = 12;
+            lCtx.strokeStyle = 'rgba(255,255,255,' + alpha + ')';
+            lCtx.lineWidth = lw;
+            lCtx.lineCap = 'round';
+            lCtx.lineJoin = 'round';
+            lCtx.beginPath();
+            lCtx.moveTo(pts[0].x, pts[0].y);
+            for (var k = 1; k < pts.length; k++) lCtx.lineTo(pts[k].x, pts[k].y);
+            lCtx.stroke();
+            lCtx.restore();
+        }
+
+        // ======================== CAMERA ========================
+        function updateCamera() {
+            var tyaw = state.mouseX * Math.PI * 0.35;
+            var tpitch = -state.mouseY * 0.25 + 0.18;
+            camera.rotation.y += (tyaw - camera.rotation.y) * 0.035;
+            camera.rotation.x += (tpitch - camera.rotation.x) * 0.035;
+
+            if (state.shakeIntensity > 0.001) {
+                camera.rotation.x += (Math.random() - 0.5) * state.shakeIntensity * 0.12;
+                camera.rotation.y += (Math.random() - 0.5) * state.shakeIntensity * 0.12;
+                camera.rotation.z = (Math.random() - 0.5) * state.shakeIntensity * 0.06;
+                state.shakeIntensity *= 0.94;
+            } else {
+                camera.rotation.z *= 0.92;
+            }
+        }
+
+        // ======================== ATMOSPHERE UPDATES ========================
+        function updateAtmosphere() {
+            if (state.flashAlpha > 0) {
+                flashOverlay.style.opacity = state.flashAlpha * 0.55;
+                state.flashAlpha *= 0.82;
+                if (state.flashAlpha < 0.008) state.flashAlpha = 0;
+            } else {
+                flashOverlay.style.opacity = 0;
+            }
+            flashLight.intensity *= 0.86;
+            groundMat.emissive.r *= 0.88;
+            groundMat.emissive.g *= 0.88;
+            groundMat.emissive.b *= 0.88;
+            scene.fog.density = 0.002 + state.intensity * 0.007;
+
+            ambient.intensity = 0.15 + state.flashAlpha * 0.6;
+        }
+
+        function updateClouds() {
+            for (var i = 0; i < clouds.length; i++) {
+                var cl = clouds[i];
+                cl.rotation.z += cl.userData.rotSpeed;
+                cl.position.x += state.wind.x * 0.025;
+                cl.position.z += state.wind.z * 0.025;
+                if (cl.position.x > 500) cl.position.x -= 1000;
+                if (cl.position.x < -500) cl.position.x += 1000;
+                if (cl.position.z > 500) cl.position.z -= 1000;
+                if (cl.position.z < -500) cl.position.z += 1000;
+                cl.material.opacity = cl.userData.baseOpacity * (0.4 + state.intensity * 0.6);
+            }
+        }
+
+        // ======================== AUDIO SYSTEM ========================
+        var stormAudio = {
+            ctx: null, masterGain: null,
+            rainGain: null, windGain: null, windFilter: null,
+            rainSrc: null, windSrc: null,
+            muted: true, started: false,
+
+            init: function () {
+                this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                this.masterGain = this.ctx.createGain();
+                this.masterGain.gain.value = 0.85;
+                this.masterGain.connect(this.ctx.destination);
+                this._startRain();
+                this._startWind();
+                this.started = true;
+                this.muted = false;
+            },
+
+            toggle: function () {
+                if (!this.started) { this.init(); return; }
+                if (this.ctx.state === 'suspended') this.ctx.resume();
+                this.muted = !this.muted;
+                this.masterGain.gain.linearRampToValueAtTime(
+                    this.muted ? 0 : 0.85, this.ctx.currentTime + 0.3
+                );
+            },
+
+            _startRain: function () {
+                var sr = this.ctx.sampleRate;
+                var buf = this.ctx.createBuffer(2, sr * 2, sr);
+                for (var ch = 0; ch < 2; ch++) {
+                    var d = buf.getChannelData(ch);
+                    for (var i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+                }
+                this.rainSrc = this.ctx.createBufferSource();
+                this.rainSrc.buffer = buf;
+                this.rainSrc.loop = true;
+
+                var bp = this.ctx.createBiquadFilter();
+                bp.type = 'bandpass'; bp.frequency.value = 4500; bp.Q.value = 0.25;
+                var hp = this.ctx.createBiquadFilter();
+                hp.type = 'highpass'; hp.frequency.value = 2200;
+
+                this.rainGain = this.ctx.createGain();
+                this.rainGain.gain.value = 0.12;
+                this.rainSrc.connect(bp);
+                bp.connect(hp);
+                hp.connect(this.rainGain);
+                this.rainGain.connect(this.masterGain);
+                this.rainSrc.start();
+            },
+
+            _startWind: function () {
+                var sr = this.ctx.sampleRate;
+                var buf = this.ctx.createBuffer(1, sr * 4, sr);
+                var d = buf.getChannelData(0);
+                for (var i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+                this.windSrc = this.ctx.createBufferSource();
+                this.windSrc.buffer = buf;
+                this.windSrc.loop = true;
+
+                this.windFilter = this.ctx.createBiquadFilter();
+                this.windFilter.type = 'lowpass';
+                this.windFilter.frequency.value = 350;
+                this.windFilter.Q.value = 1.2;
+
+                var warm = this.ctx.createBiquadFilter();
+                warm.type = 'bandpass'; warm.frequency.value = 180; warm.Q.value = 0.5;
+
+                this.windGain = this.ctx.createGain();
+                this.windGain.gain.value = 0.03;
+                this.windSrc.connect(this.windFilter);
+                this.windFilter.connect(warm);
+                warm.connect(this.windGain);
+                this.windGain.connect(this.masterGain);
+                this.windSrc.start();
+            },
+
+            updateLevels: function (intensity) {
+                if (!this.started) return;
+                var t = this.ctx.currentTime;
+                this.rainGain.gain.linearRampToValueAtTime(0.04 + intensity * 0.45, t + 0.6);
+                this.windGain.gain.linearRampToValueAtTime(intensity * 0.28, t + 0.6);
+                this.windFilter.frequency.linearRampToValueAtTime(180 + intensity * 650, t + 0.6);
+            },
+
+            playThunder: function (dist) {
+                if (!this.started || this.muted) return;
+                var now = this.ctx.currentTime;
+                var vol = Math.max(0.12, 1.0 - dist / 500);
+
+                // Sharp crack
+                var crackLen = 0.25;
+                var crackBuf = this.ctx.createBuffer(1, this.ctx.sampleRate * crackLen, this.ctx.sampleRate);
+                var cd = crackBuf.getChannelData(0);
+                for (var i = 0; i < cd.length; i++)
+                    cd[i] = (Math.random() * 2 - 1) * Math.exp(-i / (this.ctx.sampleRate * 0.04));
+                var crackSrc = this.ctx.createBufferSource(); crackSrc.buffer = crackBuf;
+                var crackHP = this.ctx.createBiquadFilter();
+                crackHP.type = 'highpass'; crackHP.frequency.value = dist < 120 ? 150 : 400;
+                var crackG = this.ctx.createGain();
+                crackG.gain.setValueAtTime(vol * 0.8, now);
+                crackG.gain.exponentialRampToValueAtTime(0.01, now + crackLen);
+                crackSrc.connect(crackHP); crackHP.connect(crackG); crackG.connect(this.masterGain);
+                crackSrc.start(now); crackSrc.stop(now + crackLen);
+
+                // Deep rumble
+                var rLen = 5;
+                var rBuf = this.ctx.createBuffer(1, this.ctx.sampleRate * rLen, this.ctx.sampleRate);
+                var rd = rBuf.getChannelData(0);
+                for (var i = 0; i < rd.length; i++) rd[i] = Math.random() * 2 - 1;
+                var rSrc = this.ctx.createBufferSource(); rSrc.buffer = rBuf;
+                var rLP = this.ctx.createBiquadFilter();
+                rLP.type = 'lowpass'; rLP.frequency.value = 55 + Math.random() * 70; rLP.Q.value = 2.5;
+                var rG = this.ctx.createGain();
+                rG.gain.setValueAtTime(0, now + 0.04);
+                rG.gain.linearRampToValueAtTime(vol, now + 0.12);
+                rG.gain.exponentialRampToValueAtTime(vol * 0.35, now + 0.7);
+                rG.gain.exponentialRampToValueAtTime(0.01, now + 3.5 + Math.random() * 2);
+                rSrc.connect(rLP); rLP.connect(rG); rG.connect(this.masterGain);
+                rSrc.start(now + 0.04); rSrc.stop(now + rLen);
+
+                // Sub-bass oscillator
+                var sub = this.ctx.createOscillator();
+                sub.type = 'sine'; sub.frequency.value = 22 + Math.random() * 22;
+                var sG = this.ctx.createGain();
+                sG.gain.setValueAtTime(0, now);
+                sG.gain.linearRampToValueAtTime(vol * 0.22, now + 0.08);
+                sG.gain.exponentialRampToValueAtTime(0.01, now + 2.8 + Math.random());
+                sub.connect(sG); sG.connect(this.masterGain);
+                sub.start(now); sub.stop(now + 4);
+            }
+        };
+
+        // ======================== UI ========================
+        var slider = document.getElementById('intensity');
+        var label = document.getElementById('intensity-label');
+        var soundBtn = document.getElementById('sound-btn');
+        var fsBtn = document.getElementById('fs-btn');
+
+        function intensityName(v) {
+            if (v < 10) return 'Drizzle';
+            if (v < 25) return 'Light';
+            if (v < 45) return 'Steady';
+            if (v < 60) return 'Heavy';
+            if (v < 75) return 'Severe';
+            if (v < 90) return 'Violent';
+            return 'Hurricane';
+        }
+
+        slider.addEventListener('input', function (e) {
+            state.intensity = parseInt(e.target.value) / 100;
+            label.textContent = intensityName(parseInt(e.target.value));
+            stormAudio.updateLevels(state.intensity);
+        });
+
+        soundBtn.addEventListener('click', function () {
+            stormAudio.toggle();
+            soundBtn.textContent = stormAudio.muted ? '\u{1F509}' : '\u{1F50A}';
+        });
+
+        fsBtn.addEventListener('click', function () {
+            if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+            else document.exitFullscreen();
+        });
+
+        // Mouse look
+        document.addEventListener('mousemove', function (e) {
+            state.mouseX = (e.clientX / window.innerWidth - 0.5) * 2;
+            state.mouseY = (e.clientY / window.innerHeight - 0.5) * 2;
+        });
+
+        // Touch look
+        document.addEventListener('touchmove', function (e) {
+            if (e.target.closest('#controls')) return;
+            var t = e.touches[0];
+            state.mouseX = (t.clientX / window.innerWidth - 0.5) * 2;
+            state.mouseY = (t.clientY / window.innerHeight - 0.5) * 2;
+        }, { passive: true });
+
+        window.addEventListener('resize', function () {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            resizeLCanvas();
+        });
+
+        // ======================== MAIN LOOP ========================
+        var lastAudioUpdate = 0;
+
+        function animate() {
+            requestAnimationFrame(animate);
+            var now = performance.now();
+
+            updateWind(now);
+            updateRain();
+            updateSplashes();
+            updateClouds();
+            updateCamera();
+            updateAtmosphere();
+
+            if (shouldFire(now)) triggerLightning();
+            drawBolts();
+
+            if (now - lastAudioUpdate > 400) {
+                stormAudio.updateLevels(state.intensity);
+                lastAudioUpdate = now;
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        stormAudio.updateLevels(state.intensity);
+        animate();
+    })();
+    </script>
+</body>
+</html>
